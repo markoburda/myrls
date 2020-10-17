@@ -9,18 +9,22 @@
 #include <sstream>
 #include <cstring>
 #include <filesystem>
+#include <dirent.h>
 
 struct file_or_dir{
-    bool name_or_about= true;
+    bool name_or_about=true;
     std::string type;
     std::string user_name;
     std::string access;
     std::string bytes;
-    std::string last_modification_data_and_time;
-    std::string file_name;
+    std::string last_modified;
+    const char *file_name;
     std::string full_file_name;
 };
-std::string get_rwx(int desc){
+
+static const char *filterdir;
+
+std::string get_mod(int desc){
     std::string res;
     if (desc & 4){
         res += "r";
@@ -42,19 +46,32 @@ std::string get_rwx(int desc){
     }
     return res;
 }
-std::vector<std::string> get_directories(const std::string& s)
+
+static int is_dir(const struct dirent *dir)
 {
-    std::vector<std::string> r;
-    for(auto& p : std::filesystem::recursive_directory_iterator(s))
-        if (p.is_directory())
-            r.push_back(p.path().string());
-    return r;
+    struct stat st;
+    char buf[NAME_MAX];
+
+    if (filterdir) {
+        snprintf(buf, sizeof(buf), "%s/%s", filterdir, dir->d_name);
+        stat(buf, &st);
+    } else {
+        stat(dir->d_name, &st);
+    }
+    return (st.st_mode & S_IFDIR);
 }
 
+int get_dirs(const char* path, struct dirent ***filelist){
+    filterdir = path;
+    int ndirs = scandir(path, filelist, is_dir, alphasort);
+    filterdir = NULL;
 
-void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir= false){
+    return ndirs;
+}
 
+void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir=false){
     file_or_dir cur;
+    //Should probably use const char* instead of string, with max capacity of NAME_MAX
     std::string name;
     for (int i = 0; i < strlen(dir_name); i++){
         if (dir_name[i] == '/'){
@@ -87,6 +104,7 @@ void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir
             cur.type = "=";
             break;
         default:
+            //TODO change "unknown?" to "?" ?
             cur.type = "unknown?";
             break;
     }
@@ -102,7 +120,7 @@ void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir
         int u = (sb.st_mode & S_IRWXU) >> 6;
         int g = (sb.st_mode & S_IRWXG) >> 3;
         int o = sb.st_mode & S_IRWXO;
-        cur.access = get_rwx(u) + get_rwx(g) + get_rwx(o);
+        cur.access = get_mod(u) + get_mod(g) + get_mod(o);
         cur.bytes = std::to_string(sb.st_size);
         cur.user_name = getpwuid(sb.st_uid)->pw_name;
         if (cur.type.empty() & (cur.access.find('x') != std::string::npos)){
@@ -128,12 +146,13 @@ void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir
         for(std::string s; iss >> s; )
             result.push_back(s);
         std::string year = result[result.size() - 1];
-        cur.last_modification_data_and_time = year + "-" + std::to_string(timeinfo->tm_mon) + "-" + std::to_string(timeinfo->tm_mday) + " " + time;
+        cur.last_modified = year + "-" + std::to_string(timeinfo->tm_mon) + "-" + std::to_string(timeinfo->tm_mday) + " " + time;
         one_by_one.emplace_back(cur);
     }
 
 }
 int main(int argc, char *argv[]) {
+    //TODO declare struct dirent** to store list of filenames when calling get_dirs();
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <pathname>\n", argv[0]);
         exit(EXIT_FAILURE);
@@ -141,13 +160,34 @@ int main(int argc, char *argv[]) {
 
     std::vector<file_or_dir> one_by_one;
     about_file(argv[1], one_by_one);
-    // RUN FOR LOOP TO CKECK MAX SIZES OF EACH PART IN ABOUT FILE THAT NEEDED AND STANDARTIZE IT
+    // RUN FOR LOOP TO CHECK MAX SIZES OF EACH PART IN ABOUT FILE THAT NEEDED AND STANDARDIZE IT
     for(const auto& file:one_by_one){
         if (!file.name_or_about){
             std::cout << file.full_file_name << ":\n";
         }
         else{
-            // STANDARTIZED OUTPUT FOR ALL, ALL PARTS THAT NEEDED ARE IN file
+            // STANDARDIZED OUTPUT FOR ALL, ALL PARTS THAT NEEDED ARE IN file
+
+            //TODO
+            //|
+            //|
+            //V
+
+            struct dirent **filelist;
+
+            //file.full_file_name??
+            //changed file_name type to const char*
+            int n = get_dirs(file.file_name, &filelist);
+
+            if (n < 0) {
+                perror("scandir error");
+            } else {
+                for (int i = 0; i < n; i++) {
+                    printf("%s\n", filelist[i]->d_name);
+                    free(filelist[i]);
+                }
+                free(filelist);
+            }
         }
     }
     return 0;
