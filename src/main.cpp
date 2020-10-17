@@ -10,7 +10,8 @@
 #include <cstring>
 #include <filesystem>
 #include <dirent.h>
-
+#include <map>
+std::map<const char*, struct stat> directories;
 struct file_or_dir{
     bool name_or_about=true;
     std::string type;
@@ -19,7 +20,7 @@ struct file_or_dir{
     std::string bytes;
     std::string last_modified;
     const char *file_name;
-    std::string full_file_name;
+    const char *full_file_name;
 };
 
 static const char *filterdir;
@@ -49,29 +50,44 @@ std::string get_mod(int desc){
 
 static int is_dir(const struct dirent *dir)
 {
-    struct stat st;
     char buf[NAME_MAX];
-
-    if (filterdir) {
+    struct stat st{};
+    if (directories.find(dir->d_name) != directories.end()){
+        st = directories.at(dir->d_name);
+    }
+    else if (filterdir) {
+        //TODO uncomment
         snprintf(buf, sizeof(buf), "%s/%s", filterdir, dir->d_name);
         stat(buf, &st);
+        directories[dir->d_name] = st;
     } else {
         stat(dir->d_name, &st);
     }
-    return (st.st_mode & S_IFDIR);
-}
 
+    return st.st_mode & S_IFDIR;
+}
+static int is_file(const struct dirent *dir)
+{
+    return 1;
+}
 int get_dirs(const char* path, struct dirent ***filelist){
     filterdir = path;
+    struct stat st{};
     int ndirs = scandir(path, filelist, is_dir, alphasort);
     filterdir = NULL;
 
     return ndirs;
 }
+int get_all_files(const char* path, struct dirent ***filelist){
+    filterdir = path;
+    struct stat st{};
+    int ndirs = scandir(path, filelist, is_file, alphasort);
+    filterdir = nullptr;
+    return ndirs;
+}
 
 void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir=false){
     file_or_dir cur;
-    //Should probably use const char* instead of string, with max capacity of NAME_MAX
     std::string name;
     for (int i = 0; i < strlen(dir_name); i++){
         if (dir_name[i] == '/'){
@@ -81,10 +97,11 @@ void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir
             name += dir_name[i];
         }
     }
-    cur.file_name = name;
+    cur.file_name = name.c_str();
     cur.full_file_name = dir_name;
     struct stat sb{};
     if (stat(dir_name, &sb) == -1) {
+        printf("Failed to open %s\n", dir_name);
         perror("stat");
         exit(EXIT_FAILURE);
     }
@@ -108,11 +125,28 @@ void about_file(char* dir_name, std::vector<file_or_dir> &one_by_one, bool indir
             cur.type = "unknown?";
             break;
     }
-    if (!indir && cur.type == "/"){
+    if (!indir && cur.type == "/") {
         cur.name_or_about = false;
         one_by_one.emplace_back(cur);
-        // NEEDED TO GET ALL FILES AND DIRECTORIES, SORT THEM AND RUN WITH "indir=true"
-        // AFTER GET ALL SUBDIRECTORIES AND SORT THEM AND RUN WITH "indir=false"
+        struct dirent **dirlist;
+        struct dirent **filelist;
+
+        int n = get_all_files(cur.full_file_name, &filelist);
+        int k = get_dirs(cur.full_file_name, &dirlist);
+        //FOR EACH IN FILELIST RUN about_file WITH "indir=true"
+        //FOR EACH IN DIRLIST RUN about_file
+        std::cout << filelist[0] << std::endl;
+        for (int i = 2; i < n; i++) {
+            printf("FILE: %s\n", filelist[i]->d_name);
+            char teststr[sizeof(dir_name) + sizeof(filelist[i]->d_name) + 1];
+            strcpy(teststr, dir_name);
+            strcat(teststr, "/");
+            strcat(teststr, filelist[i]->d_name);
+//            printf("FULL STRING: %s\n", teststr);
+            about_file(teststr, one_by_one);
+            free(filelist[i]);
+        }
+        free(dirlist);
     }
     else{
         struct tm * timeinfo = localtime(&sb.st_ctime);
@@ -157,38 +191,47 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <pathname>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-
+    struct stat sb;
+    if (stat(argv[1], &sb) == -1) {
+        perror("stat");
+        exit(EXIT_FAILURE);
+    }
+    directories[argv[1]] = sb;
     std::vector<file_or_dir> one_by_one;
     about_file(argv[1], one_by_one);
-    // RUN FOR LOOP TO CHECK MAX SIZES OF EACH PART IN ABOUT FILE THAT NEEDED AND STANDARDIZE IT
+    size_t user_name=0, bytes=0, last_modified=0;
+    for(const auto& file:one_by_one){
+        if (file.name_or_about){
+            user_name = std::max(user_name,file.user_name.size());
+            bytes = std::max(bytes, file.bytes.size());
+            last_modified = std::max(last_modified, file.last_modified.size());
+        }
+    }
     for(const auto& file:one_by_one){
         if (!file.name_or_about){
-            std::cout << file.full_file_name << ":\n";
+            std::cout << '\n' << file.full_file_name << ":\n";
         }
         else{
-            // STANDARDIZED OUTPUT FOR ALL, ALL PARTS THAT NEEDED ARE IN file
+            std::cout << file.access << " " << std::string(user_name - file.user_name.size(), ' ') << file.user_name << " " << std::string(bytes - file.bytes.size(), ' ') << file.bytes << "  " <<std::string(last_modified - file.last_modified.size(), ' ') << file.last_modified << " " + file.type << file.file_name << '\n';
 
-            //TODO
-            //|
-            //|
-            //V
-
-            struct dirent **filelist;
+            //NOT NEEDED PART HERE, THIS IS JUST COUT
+            //struct dirent **filelist;
 
             //file.full_file_name??
             //changed file_name type to const char*
-            int n = get_dirs(file.file_name, &filelist);
+            //int n = get_dirs(file.file_name, &filelist);
 
-            if (n < 0) {
-                perror("scandir error");
-            } else {
-                for (int i = 0; i < n; i++) {
-                    printf("%s\n", filelist[i]->d_name);
-                    free(filelist[i]);
-                }
-                free(filelist);
-            }
+            //if (n < 0) {
+            //    perror("scandir error");
+            //} else {
+            //    for (int i = 0; i < n; i++) {
+            //        printf("%s\n", filelist[i]->d_name);
+            //        free(filelist[i]);
+            //    }
+            //    free(filelist);
+            //}
         }
+
     }
     return 0;
 }
